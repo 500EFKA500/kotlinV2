@@ -1,4 +1,4 @@
-package lesson2
+package lesson2copy
 
 import de.fabmax.kool.KoolApplication   // Подключение основной библиотеки Kool
 import de.fabmax.kool.addScene

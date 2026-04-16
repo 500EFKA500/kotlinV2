@@ -207,7 +207,7 @@ fun buildAlchemistDialogue(player: PlayerState): DialogueView{
                 "Алхимик",
                 "$greeting \n Хочешь помочь - принеси травку",
                 listOf(
-                    DialogueOption("accept_help", "Я принесу траву"),
+                    DialogueOption("accepted_help", "Я принесу траву"),
                     DialogueOption("threat", "травы не будет, гони товар")
                 )
             )
@@ -356,10 +356,6 @@ data class MovedBlocked(
     val blockedZ: Int
 ): GameEvent
 
-data class Win(
-    override val playerId: String
-): GameEvent
-
 class GameServer {
 
     // Размер карты, игрок может ходить только в ее пределах
@@ -418,6 +414,7 @@ class GameServer {
 
     val players: StateFlow<Map<String, PlayerState>> = _players.asStateFlow()
     private val _treasureChestVisible = MutableStateFlow(false)
+    val treasureChestVisible: StateFlow<Boolean> = _treasureChestVisible.asStateFlow()
 
     fun start(scope: kotlinx.coroutines.CoroutineScope) {
         scope.launch {
@@ -461,7 +458,7 @@ class GameServer {
 
     private fun nearestObject(player: PlayerState): WorldObjectDef? {
         val px = player.gridX.toFloat()
-        val pz = player.gridX.toFloat()
+        val pz = player.gridZ.toFloat()
 
         val candidates = worldObjects.filter { obj ->
             distance2D(px, pz, obj.cellX.toFloat(), obj.cellZ.toFloat()) <= obj.interactRadius
@@ -672,8 +669,8 @@ class GameServer {
 
                 when(cmd.optionId){
                     "accepted_help" -> {
-                        val radiusHerb = distance2D(player.gridX.toFloat(), player.gridZ.toFloat(), 3f, 0f)
-                        if (radiusHerb <= 1.7f){
+                        val radiusAlchemist = distance2D(player.gridX.toFloat(), player.gridZ.toFloat(), -3f, 0f)
+                        if (radiusAlchemist <= 1.7f){
                             if (player.questState != QuestState.START){
                                 _events.emit(ServerMessage(cmd.playerId, "Путь помощи можно выбрать только в начале квеста"))
                                 return
@@ -726,7 +723,6 @@ class GameServer {
                         _events.emit(NpcMemoryChanged(cmd.playerId, newMemory))
                         _events.emit(QuestStateChanged(cmd.playerId, QuestState.GOOD_END))
                         _events.emit(ServerMessage(cmd.playerId, "Алхимик получил траву и выдал тебе золото"))
-                        _events.emit(Win(cmd.playerId))
                     }
 
                     else -> {
@@ -754,15 +750,55 @@ class GameServer {
 class HudState{
     val activePlayerIdFlow = MutableStateFlow("Oleg")
 
-    val activePLayerIdUi = mutableStateOf("Oleg")
+    val activePlayerIdUi = mutableStateOf("Oleg")
 
     val playerSnapShot = mutableStateOf(initialPlayerState("Oleg"))
+    val isTreasureChestVisible = mutableStateOf(false)
 
     val log = mutableStateOf<List<String>>(emptyList())
-
-    val isWinVisible = mutableStateOf(false)
     val winGifProvider = mutableStateOf<ImageProvider?>(null)
     val hasPlayedWinSound = mutableStateOf(false)
+}
+
+private fun Scene.addWorldCube(
+    x: Float,
+    z: Float,
+    y: Float = 0f,
+    color: Color = Color.WHITE
+): ColorMesh {
+    val node = addColorMesh {
+        generate {
+            cube {
+                colored()
+            }
+        }
+        shader = KslPbrShader {
+            color { constColor(color) }
+            metallic(0f)
+            roughness(0.25f)
+        }
+    }
+    node.transform.translate(x, y, z)
+    return node
+}
+
+private fun findPlayerGridMovementAsset(vararg fileNames: String): File? {
+    val searchDirs = listOf(
+        File("src/main/kotlin/playerGridMovement"),
+        File("kotlin/playerGridMovement"),
+        File("playerGridMovement"),
+        File(".")
+    )
+
+    for (fileName in fileNames) {
+        for (dir in searchDirs) {
+            val candidate = if (dir.path == ".") File(fileName) else File(dir, fileName)
+            if (candidate.exists()) {
+                return candidate
+            }
+        }
+    }
+    return null
 }
 
 private data class GifFrame(
@@ -849,10 +885,7 @@ private class AnimatedGifImageProvider(
 private fun playWinSoundIfExists(hud: HudState) {
     if (hud.hasPlayedWinSound.value) return
 
-    val soundFile = listOf(
-        File("kotlin/playerGridMovement/victory.mp3")
-    ).firstOrNull { it.exists() } ?: return
-
+    val soundFile = findPlayerGridMovementAsset("victory.mp3", "win.wav", "win.ogg") ?: return
     hud.hasPlayedWinSound.value = true
 
     thread(isDaemon = true, name = "win-sound-player") {
@@ -913,7 +946,6 @@ fun formatMemory(memory: NpcMemory): String{
     return "Встретился = ${memory.hasMet}, Сколько раз поговорил = ${memory.timesTalked}, отдал траву = ${memory.receivedHerb}"
 }
 
-
 fun eventToText(e: GameEvent): String{
     return when(e){
         is PlayerMoved -> "PlayerMoved (${e.newGridX}, ${e.newGridZ})"
@@ -928,7 +960,6 @@ fun eventToText(e: GameEvent): String{
         is InteractedWithChest -> "InteractedWithChest ${e.chestId}"
         is GoldCountChanged -> "GoldCountChanged ${e.newCount}"
         is ServerMessage -> "Server: ${e.text}"
-        is Win -> "Win"
     }
 }
 
@@ -938,20 +969,17 @@ fun main() = KoolApplication {
 
     addScene {
         defaultOrbitCamera()
+        clearColor = ClearColorFill(Color(0.08f, 0.11f, 0.15f, 1f))
 
         // Строим пол из мелких кубиков
         for (x in -5..5) {
             for (z in -4..4) {
-                addColorMesh {
-                    generate { cube { colored() } }
-
-                    shader = KslPbrShader {
-                        color { vertexColor() }
-                        metallic(0f)
-                        roughness(0.25f)
-                    }
-                }
-                    .transform.translate(x.toFloat(), -1.2f, z.toFloat())
+                addWorldCube(
+                    x = x.toFloat(),
+                    z = z.toFloat(),
+                    y = -1.2f,
+                    color = if ((x + z) % 2 == 0) Color(0.22f, 0.28f, 0.34f, 1f) else Color(0.15f, 0.2f, 0.25f, 1f)
+                )
                 // Сдвигаем плитку (кубы - пол) в мире
                 // y = -1.2f опускаем пол ниже игрока
             }
@@ -965,61 +993,18 @@ fun main() = KoolApplication {
         )
 
         for (cell in wallCells) {
-            addColorMesh {
-                generate { cube { colored() } }
-
-                shader = KslPbrShader {
-                    color { vertexColor() }
-                    metallic(0f)
-                    roughness(0.25f)
-                }
-            }
-                .transform.translate(cell.x.toFloat(), -1.2f, cell.z.toFloat())
+            addWorldCube(
+                x = cell.x.toFloat(),
+                z = cell.z.toFloat(),
+                y = -0.15f,
+                color = Color(0.63f, 0.47f, 0.3f, 1f)
+            )
         }
 
-        val playerNode = addColorMesh {
-            generate {
-                cube {
-                    colored()
-                }
-            }
-            shader = KslPbrShader {
-                color { vertexColor() }
-                metallic(0f)
-                roughness(0.25f)
-            }
-        }
-
-        val alchemistNode = addColorMesh {
-            generate {
-                cube {
-                    colored()
-                }
-            }
-            shader = KslPbrShader {
-                color { vertexColor() }
-                metallic(0f)
-                roughness(0.25f)
-            }
-        }
-
-        alchemistNode.transform.translate(3f, 0f, 0f)
-
-        val herbNode = addColorMesh {
-            generate {
-                cube {
-                    colored()
-                }
-            }
-            shader = KslPbrShader {
-                color { vertexColor() }
-                metallic(0f)
-                roughness(0.25f)
-            }
-        }
-
-
-        herbNode.transform.translate(3f, 0f, 0f)
+        val playerNode = addWorldCube(0f, 0f, y = 0.15f, color = Color(0.2f, 0.8f, 1f, 1f))
+        val alchemistNode = addWorldCube(-3f, 0f, y = 0.35f, color = Color(1f, 0.78f, 0.22f, 1f))
+        val herbNode = addWorldCube(3f, 0f, y = 0.2f, color = Color(0.34f, 0.9f, 0.42f, 1f))
+        val treasureNode = addWorldCube(5f, 0f, y = 0.35f, color = Color(0.95f, 0.62f, 0.16f, 1f))
 
         lighting.singleDirectionalLight {
             setup(Vec3f(-1f, -1f, -1f))
@@ -1038,6 +1023,21 @@ fun main() = KoolApplication {
 
         var lastAppliedYaw = 0f
         // yaw - какой поворот уже был применен к PlayerNode
+
+        alchemistNode.onUpdate {
+            isVisible = true
+            transform.rotate(20f.deg * Time.deltaT, Vec3f.Y_AXIS)
+        }
+
+        herbNode.onUpdate {
+            isVisible = true
+            transform.rotate(35f.deg * Time.deltaT, Vec3f.Y_AXIS)
+        }
+
+        treasureNode.onUpdate {
+            isVisible = true
+            transform.rotate(28f.deg * Time.deltaT, Vec3f.Y_AXIS)
+        }
 
         playerNode.onUpdate {
             val activeId = hud.activePlayerIdFlow.value
@@ -1065,6 +1065,7 @@ fun main() = KoolApplication {
 
             lastAppliedX = renderX
             lastAppliedZ = renderZ
+            lastAppliedRotate = renderRotate
 
             // Поварачиваем игрока по направлению
             val targetYaw = facingToYawDeg(player.facing)
@@ -1087,6 +1088,17 @@ fun main() = KoolApplication {
             }
             .onEach { player ->
                 hud.playerSnapShot.value = player
+                if (player.questState == QuestState.GOOD_END) {
+                    playWinSoundIfExists(hud)
+                } else {
+                    hud.hasPlayedWinSound.value = false
+                    hud.winGifProvider.value = null
+                }
+            }
+            .launchIn(coroutineScope)
+        server.treasureChestVisible
+            .onEach { isVisible ->
+                hud.isTreasureChestVisible.value = isVisible
             }
             .launchIn(coroutineScope)
         hud.activePlayerIdFlow
@@ -1097,40 +1109,42 @@ fun main() = KoolApplication {
                 eventToText(event)
             }
             .onEach { line ->
-                hudLog(hud, "[${hud.activePLayerIdUi.value}] $line")
-            }
-            .launchIn(coroutineScope)
-
-        hud.activePlayerIdFlow
-            .flatMapLatest { pid ->
-                server.events.filter { it.playerId == pid }
-            }
-            .filter { it is Win }
-            .onEach {
-                hud.isWinVisible.value = true
-                playWinSoundIfExists(hud)
+                hudLog(hud, "[${hud.activePlayerIdUi.value}] $line")
             }
             .launchIn(coroutineScope)
 
         addPanelSurface {
             modifier
-                .align(AlignmentX.Start, AlignmentY.Top)
-                .margin(16.dp)
-                .background(RoundRectBackground(Color(0f, 0f, 0f, 0.6f), 14.dp))
-                .padding(12.dp)
+                .size(Grow.Std, Grow.Std)
+                .background(null)
+                .layout(CellLayout)
 
-            Column {
+            Column(FitContent, FitContent) {
+                modifier
+                    .align(AlignmentX.Start, AlignmentY.Top)
+                    .margin(16.dp)
+                    .width(420.dp)
+                    .background(RoundRectBackground(Color(0f, 0f, 0f, 0.62f), 14.dp))
+                    .padding(12.dp)
+
                 val player = hud.playerSnapShot.use()
                 val dialogue = buildAlchemistDialogue(player)
+                val activePlayerId = hud.activePlayerIdUi.use()
+                val chestVisible = hud.isTreasureChestVisible.use()
 
-                Text("Игрок: ${hud.activePLayerIdUi.use()}") { modifier.margin(bottom = sizes.gap) }
-                Text("Позиция: x=${"%.1f".format(player.gridX)} z=${"%.1f".format(player.gridZ)}") {}
-                Text("Смотрит: ${player.facing}") { modifier.font(sizes.smallText).margin(bottom = sizes.smallGap) }
+                Text("Игрок: $activePlayerId") { modifier.margin(bottom = sizes.gap) }
+                Text("Позиция: x=${player.gridX} z=${player.gridZ}") {}
+                Text("Поворот: ${"%.0f".format(player.rotate)}°") { modifier.font(sizes.smallText) }
+                Text("Смотрит: ${player.facing}") { modifier.font(sizes.smallText) }
                 Text("Quest State: ${player.questState}") { modifier.font(sizes.smallText) }
                 Text(currentObjective(player)) { modifier.font(sizes.smallText) }
                 Text(formatInventory(player)) { modifier.font(sizes.smallText).margin(bottom = sizes.smallGap) }
                 Text("Gold: ${player.gold}") { modifier.font(sizes.smallText) }
                 Text("Hint: ${player.hintText}") { modifier.font(sizes.smallText) }
+                Text(currentZoneText(player)) { modifier.font(sizes.smallText) }
+                Text("Chest: ${if (chestVisible) "visible" else "locked"}") {
+                    modifier.font(sizes.smallText)
+                }
                 Text("Npc Memory: ${formatMemory(player.alchemistMemory)}") {
                     modifier.font(sizes.smallText).margin(bottom = sizes.smallGap)
                 }
@@ -1138,9 +1152,8 @@ fun main() = KoolApplication {
                 Row {
                     Button("Сменить игрока") {
                         modifier.margin(end = 8.dp).onClick {
-                            val newId = if (hud.activePLayerIdUi.value == "Oleg") "Stas" else "Oleg"
-
-                            hud.activePLayerIdUi.value = newId
+                            val newId = if (hud.activePlayerIdUi.value == "Oleg") "Stas" else "Oleg"
+                            hud.activePlayerIdUi.value = newId
                             hud.activePlayerIdFlow.value = newId
                         }
                     }
@@ -1170,129 +1183,118 @@ fun main() = KoolApplication {
                         }
                     }
                     Button("Назад") {
-                        modifier.margin(end = 8.dp).onClick {
-                            server.trySend(CmdStepMove(player.playerId, stepX = 0, stepZ = -1))
+                        modifier.onClick {
+                            server.trySend(CmdStepMove(player.playerId, stepX = 0, stepZ = 1))
                         }
                     }
                 }
+
                 Row {
-                    Button("вращать в лево") {
+                    modifier.margin(top = sizes.smallGap)
+                    Button("Повернуть -10°") {
                         modifier.margin(end = 8.dp).onClick {
                             server.trySend(CmdRotate(player.playerId, rotate = -10f))
                         }
                     }
-                    Button("вращать в право") {
-                        modifier.margin(end = 8.dp).onClick {
+                    Button("Повернуть +10°") {
+                        modifier.onClick {
                             server.trySend(CmdRotate(player.playerId, rotate = 10f))
                         }
                     }
-                    Button("Добавить кубик") {
-                        modifier.margin(end = 8.dp).onClick {
-                            val cubeNode = addColorMesh {
-                                generate {
-                                    cube {
-                                        colored()
-                                    }
-                                }
-                                shader = KslPbrShader {
-                                    color { vertexColor() }
-                                    metallic(0f)
-                                    roughness(0.25f)
-                                }
-                            }
-                            var pos: Float = 0f
-                            pos += 1.7f
+                }
 
-                            cubeNode.transform.translate(3f, pos, 0f)
+                Text("Взаимодействие:") { modifier.margin(top = sizes.gap) }
 
+                Row {
+                    Button("Потрогать ближайший объект") {
+                        modifier.onClick {
+                            server.trySend(CmdInteract(player.playerId))
                         }
-                    }
-                    Text("Взаимодействия:") { modifier.margin(top = sizes.gap) }
-
-                    Row {
-                        Button("Потрогать ближайшего") {
-                            modifier.margin(end = 8.dp).onClick {
-                                server.trySend(CmdInteract(player.playerId))
-                            }
-                        }
-                    }
-
-                    Text(dialogue.npcId) { modifier.margin(top = sizes.gap) }
-                    Text(dialogue.text) { modifier.margin(bottom = sizes.smallGap) }
-
-                    if (dialogue.option.isEmpty()) {
-                        Text("Нет доступных варинатов ответа") {
-                            modifier.font(sizes.smallText).margin(bottom = sizes.gap)
-                        }
-                    } else {
-                        Row {
-                            for (option in dialogue.option) {
-                                Button(option.text) {
-                                    modifier.margin(end = 8.dp).onClick {
-                                        server.trySend(
-                                            CmdChooseDialogueOption(
-                                                player.playerId,
-                                                option.id
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Text("Лог: ") { modifier.margin(top = sizes.gap) }
-
-                    for (line in hud.log.use()) {
-                        Text(line) { modifier.font(sizes.smallText) }
                     }
                 }
-            }
-        }
-        addPanelSurface {
-            modifier
-                .align(AlignmentX.Center, AlignmentY.Center)
 
-            if (hud.isWinVisible.use()) {
-                Column {
-                    Text("победа") {
-                        modifier
-                            .background(RoundRectBackground(Color(0f, 0f, 0f, 0.75f), 14.dp))
-                            .padding(horizontal = 20.dp, vertical = 12.dp)
+                Text(dialogue.npcId) { modifier.margin(top = sizes.gap) }
+                Text(dialogue.text) { modifier.font(sizes.smallText).margin(bottom = sizes.smallGap) }
+
+                if (dialogue.option.isEmpty()) {
+                    Text("Нет доступных вариантов ответа") {
+                        modifier.font(sizes.smallText).margin(bottom = sizes.gap)
                     }
-
-                    var provider = hud.winGifProvider.use()
-                    if (provider == null) {
-                        provider = AnimatedGifImageProvider.fromPath("kotlin/playerGridMovement/confetti.gif")
-                        if (provider != null) {
-                            hud.winGifProvider.value = provider
+                } else {
+                    Row {
+                        for (option in dialogue.option) {
+                            Button(option.text) {
+                                modifier.margin(end = 8.dp).onClick {
+                                    server.trySend(CmdChooseDialogueOption(player.playerId, option.id))
+                                }
+                            }
                         }
                     }
-                    if (provider != null) {
-                        Image {
+                }
+
+                Text("Лог:") { modifier.margin(top = sizes.gap) }
+
+                for (line in hud.log.use()) {
+                    Text(line) { modifier.font(sizes.smallText) }
+                }
+            }
+
+            if (hud.playerSnapShot.use().questState == QuestState.GOOD_END) {
+                val gifFile = findPlayerGridMovementAsset("confetti.gif")
+                var gifProvider = hud.winGifProvider.use()
+                if (gifProvider == null && gifFile != null) {
+                    gifProvider = AnimatedGifImageProvider.fromPath(gifFile.absolutePath)
+                    if (gifProvider != null) {
+                        hud.winGifProvider.value = gifProvider
+                    }
+                }
+                val soundFile = findPlayerGridMovementAsset("victory.mp3", "win.wav", "win.ogg")
+                modifier.backgroundColor(Color(0f, 0f, 0f, 0.28f))
+
+                Column(FitContent, FitContent) {
+                    modifier
+                        .align(AlignmentX.Center, AlignmentY.Center)
+                        .background(RoundRectBackground(Color(0.04f, 0.06f, 0.1f, 0.92f), 20.dp))
+                        .padding(horizontal = 26.dp, vertical = 20.dp)
+
+                    Text("ПОБЕДА") {
+                        modifier.alignX(AlignmentX.Center)
+                    }
+                    Text("Квест завершен") {
+                        modifier
+                            .alignX(AlignmentX.Center)
+                            .margin(top = sizes.smallGap)
+                            .font(sizes.smallText)
+                    }
+
+                    if (gifProvider != null) {
+                        Image(null) {
                             modifier
-                                .margin(top = 8.dp)
-                                .width(360.dp)
-                                .height(220.dp)
-                                .imageProvider(provider)
-                                .imageSize(ImageSize.FitContent)
-                                .background(RoundRectBackground(Color(0f, 0f, 0f, 0.4f), 8.dp))
-                                .padding(6.dp)
+                                .imageProvider(gifProvider)
+                                .alignX(AlignmentX.Center)
+                                .margin(top = 14.dp)
+                                .size(220.dp, 140.dp)
                         }
                     } else {
-                        Text("GIF не найдена: kotlin/playerGridMovement/confetti.gif") {
-                            modifier.margin(top = 8.dp).background(
-                                RoundRectBackground(Color(0f, 0f, 0f, 0.55f), 8.dp)
-                            ).padding(horizontal = 10.dp, vertical = 6.dp)
+                        Text("GIF: confetti.gif не найден") {
+                            modifier
+                                .alignX(AlignmentX.Center)
+                                .margin(top = 14.dp)
+                                .font(sizes.smallText)
                         }
                     }
 
-                    val soundExists = 
-                            File("kotlin/playerGridMovement/victory.mp3").exists()
                     Text(
-                        if (soundExists) "Звук победы найден"
-                        else "Добавь звук: win.wav / win.ogg / victory.mp3"
+                        if (soundFile != null) {
+                            "Звук: ${soundFile.name}"
+                        } else {
+                            "Звук победы не найден"
+                        }
                     ) {
-                        modifier.margin(top = 6.dp).font(sizes.smallText)
+                        modifier
+                            .alignX(AlignmentX.Center)
+                            .margin(top = 10.dp)
+                            .font(sizes.smallText)
                     }
                 }
             }
