@@ -73,6 +73,7 @@ data class PlayerState(
     val playerId: String,
     val posX: Float,
     val posZ: Float,
+    val hp: Int,
     val questState: QuestState,
     val inventory: Map<String, Int>,
     val alchemistMemory: NpcMemory,
@@ -99,6 +100,7 @@ fun initialPlayerState(playerId: String): PlayerState{
             "Stas",
             0f,
             0f,
+            100,
             QuestState.START,
             emptyMap(),
             NpcMemory(
@@ -116,6 +118,7 @@ fun initialPlayerState(playerId: String): PlayerState{
             "Oleg",
             0f,
             0f,
+            100,
             QuestState.START,
             emptyMap(),
             NpcMemory(
@@ -798,6 +801,34 @@ fun main() = KoolApplication {
                 Text("Npc Memory: ${formatMemory(player.alchemistMemory)}"){ modifier.font(sizes.smallText).margin(bottom = sizes.smallGap) }
 
                 Row {
+                    modifier.margin(bottom = sizes.smallGap)
+
+                    val hpPercent = player.hp.coerceIn(0, 100)
+                    val hpColor =
+                        if (hpPercent > 60) Color(0.1f, 0.75f, 0.25f, 0.9f)
+                        else if (hpPercent > 30) Color(0.9f, 0.7f, 0.15f, 0.9f)
+                        else Color(0.9f, 0.15f, 0.1f, 0.9f)
+
+                    Text("HP: $hpPercent%"){
+                        modifier.font(sizes.smallText).margin(end = 8.dp)
+                    }
+
+                    Box {
+                        modifier
+                            .width(120.dp)
+                            .height(12.dp)
+                            .background(RoundRectBackground(Color(0.05f, 0.05f, 0.05f, 0.7f), 6.dp))
+
+                        Box {
+                            modifier
+                                .width((hpPercent * 120 / 100).dp)
+                                .height(12.dp)
+                                .background(RoundRectBackground(hpColor, 6.dp))
+                        }
+                    }
+
+                }
+                Row {
                     Button("Сменить игрока"){
                         modifier.margin(end = 8.dp).onClick{
                             val newId = if(hud.activePLayerIdUi.value == "Oleg") "Stas" else "Oleg"
@@ -812,6 +843,8 @@ fun main() = KoolApplication {
                         }
                     }
                 }
+
+
 
                 Text("Движение в мире:"){ modifier.margin(top = sizes.gap) }
 
@@ -880,34 +913,7 @@ fun main() = KoolApplication {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// 1.1 a)
+// 1.2 c)
+// 1.3 d)
+// 1.4 d) и с) и b)
