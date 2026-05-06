@@ -243,6 +243,11 @@ data class CmdResetPlayer(
     override val playerId: String
 ): GameCommand
 
+data class CmdTakeDamage(
+    override val playerId: String,
+    val value: Int
+): GameCommand
+
 sealed interface GameEvent{
     val playerId: String
 }
@@ -287,6 +292,12 @@ data class ServerMessage(
     override val playerId: String,
     val text: String
 ): GameEvent
+
+data class DeathPanel(
+    override val playerId: String,
+): GameEvent
+
+
 
 class GameServer {
     val worldObjects = mutableListOf(
@@ -456,6 +467,26 @@ class GameServer {
                 refreshPlayerArea(cmd.playerId)
             }
 
+            is CmdTakeDamage -> {
+
+                val damage = cmd.value
+                val player = getPlayerData(cmd.playerId)
+                if (player.hp - damage <= 0 ){
+                    updatePlayer(cmd.playerId) { p ->
+                        p.copy(hp = 0)
+                    }
+                    _events.emit(DeathPanel(cmd.playerId))
+                    _events.emit(ServerMessage(cmd.playerId, "игрок ${cmd.playerId} умер"))
+                }else{
+                    updatePlayer(cmd.playerId) { p ->
+                        p.copy(
+                            hp = p.hp - damage
+                        )
+                    }
+                    _events.emit(ServerMessage(cmd.playerId, "игроку ${cmd.playerId} -${cmd.value}хп"))
+                }
+            }
+
             is CmdMoveNpc -> {
                 startMoveNpc(cmd.objId)
             }
@@ -616,6 +647,8 @@ class HudState{
 
     val playerSnapShot = mutableStateOf(initialPlayerState("Oleg"))
 
+    val deathPanelPlayerId = mutableStateOf<String?>(null)
+
     val log = mutableStateOf<List<String>>(emptyList())
 }
 
@@ -670,6 +703,7 @@ fun eventToText(e: GameEvent): String{
         is QuestStateChanged -> "QuestStateChanged ${e.newState}"
         is NpcMemoryChanged -> "NpcMemoryChanged Встретился = ${e.memory.hasMet}, Сколько раз поговорил = ${e.memory.timesTalked}, отдал траву = ${e.memory.receivedHerb}"
         is ServerMessage -> "Server: ${e.text}"
+        is DeathPanel -> "Death ${e.playerId}"
     }
 }
 
@@ -757,6 +791,7 @@ fun main() = KoolApplication {
 
     addScene {
         setupUiScene(ClearColorLoad)
+        var deathPanelJob: Job? = null
 
         hud.activePlayerIdFlow
             .flatMapLatest { pid ->
@@ -779,12 +814,85 @@ fun main() = KoolApplication {
                 hudLog(hud, "[${hud.activePLayerIdUi.value}] $line")
             }
             .launchIn(coroutineScope)
+        server.events
+            .filter { it is DeathPanel }
+            .onEach { event ->
+                val deathEvent = event as DeathPanel
+                deathPanelJob?.cancel()
+                hud.deathPanelPlayerId.value = deathEvent.playerId
+                deathPanelJob = coroutineScope.launch {
+                    delay(10_000)
+                    if (hud.deathPanelPlayerId.value == deathEvent.playerId) {
+                        hud.deathPanelPlayerId.value = null
+                    }
+                }
+            }
+            .launchIn(coroutineScope)
+
+
+        addPanelSurface {
+            modifier
+                .size(Grow.Std, Grow.Std)
+                .background(null)
+                .layout(CellLayout)
+
+            val player = hud.playerSnapShot.use()
+            val deathPanelPlayerId = hud.deathPanelPlayerId.use()
+            val hpPercent = player.hp.coerceIn(0, 100)
+
+            Column(FitContent, FitContent) {
+                modifier
+                    .align(AlignmentX.End, AlignmentY.Bottom)
+                    .margin(16.dp)
+                    .background(RoundRectBackground(Color(0f, 0f, 0f, 0f), 14.dp))
+                    .padding(12.dp)
+
+                Row {
+                    Text("HP: $hpPercent%"){
+                        modifier.font(sizes.smallText).margin(end = 8.dp)
+                    }
+                    Box {
+                        modifier
+                            .width(220.dp)
+                            .height(30.dp)
+                            .background(RoundRectBackground(Color(0.05f, 0.05f, 0.05f, 0.7f), 6.dp))
+
+                        Box {
+                            modifier
+                                .width((hpPercent * 220 / 100).dp)
+                                .height(30.dp)
+                                .background(RoundRectBackground(Color(0.1f, 0.75f, 0.25f, 0.9f), 6.dp))
+                        }
+                    }
+                }
+            }
+            Column(FitContent, FitContent) {
+                modifier
+                    .align(AlignmentX.Center, AlignmentY.Center)
+                    .margin(16.dp)
+                    .background(RoundRectBackground(Color(0f, 0f, 0f, 0f), 14.dp))
+                    .padding(12.dp)
+
+                if (deathPanelPlayerId != null) {
+                    Box {
+                        modifier
+                            .margin(bottom = 8.dp)
+                            .background(RoundRectBackground(Color(0.45f, 0.02f, 0.02f, 0.95f), 10.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                        Text("Игрок $deathPanelPlayerId умер") {
+                            modifier.font(sizes.smallText)
+                        }
+                    }
+                }
+            }
+        }
+
 
         addPanelSurface {
             modifier
                 .align(AlignmentX.Start, AlignmentY.Top)
                 .margin(16.dp)
-                .background(RoundRectBackground(Color(0f, 0f, 0f, 0.6f), 14.dp))
+                .background(RoundRectBackground(Color(0f, 0f, 0f, 0f), 14.dp))
                 .padding(12.dp)
 
             Column {
@@ -800,34 +908,7 @@ fun main() = KoolApplication {
                 Text("Hint: ${player.hintText}"){ modifier.font(sizes.smallText) }
                 Text("Npc Memory: ${formatMemory(player.alchemistMemory)}"){ modifier.font(sizes.smallText).margin(bottom = sizes.smallGap) }
 
-                Row {
-                    modifier.margin(bottom = sizes.smallGap)
 
-                    val hpPercent = player.hp.coerceIn(0, 100)
-                    val hpColor =
-                        if (hpPercent > 60) Color(0.1f, 0.75f, 0.25f, 0.9f)
-                        else if (hpPercent > 30) Color(0.9f, 0.7f, 0.15f, 0.9f)
-                        else Color(0.9f, 0.15f, 0.1f, 0.9f)
-
-                    Text("HP: $hpPercent%"){
-                        modifier.font(sizes.smallText).margin(end = 8.dp)
-                    }
-
-                    Box {
-                        modifier
-                            .width(120.dp)
-                            .height(12.dp)
-                            .background(RoundRectBackground(Color(0.05f, 0.05f, 0.05f, 0.7f), 6.dp))
-
-                        Box {
-                            modifier
-                                .width((hpPercent * 120 / 100).dp)
-                                .height(12.dp)
-                                .background(RoundRectBackground(hpColor, 6.dp))
-                        }
-                    }
-
-                }
                 Row {
                     Button("Сменить игрока"){
                         modifier.margin(end = 8.dp).onClick{
@@ -840,6 +921,11 @@ fun main() = KoolApplication {
                     Button("Сбросить игрока"){
                         modifier.onClick{
                             server.trySend(CmdResetPlayer(player.playerId))
+                        }
+                    }
+                    Button("отнять хп"){
+                        modifier.onClick{
+                            server.trySend(CmdTakeDamage(player.playerId, 20))
                         }
                     }
                 }
